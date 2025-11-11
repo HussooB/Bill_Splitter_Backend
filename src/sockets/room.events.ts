@@ -1,45 +1,42 @@
-import { Server } from "socket.io";
+// src/sockets/room.events.ts
+import { Server, Socket } from "socket.io";
 
-export default (io: Server) => {
-  io.on("connection", (socket) => {
-    console.log("✅ User connected:", socket.id);
+const roomUsers = new Map<string, Set<string>>(); // roomId -> usernames
 
-    socket.on("joinRoom", (roomId: string, ack?: () => void) => {
+export default function roomEvents(io: Server) {
+  io.on("connection", (socket: Socket) => {
+    console.log(`✅ User connected: ${socket.id}`);
+
+    // --- Joining a room ---
+    socket.on("joinRoom", (roomId: string, userName: string) => {
       socket.join(roomId);
-      console.log(`➡️ Socket ${socket.id} joined room ${roomId}`);
-      if (ack) ack();
-      socket.emit("joinedRoom", roomId);
-    });
+      console.log(`➡️ ${userName} joined ${roomId}`);
 
-    socket.on("sendMessage", (data) => {
-      const messageText = data.text || data.message || "";
-      console.log(`💬 Message from ${socket.id} to room ${data.roomId}:`, messageText);
+      // Track users
+      if (!roomUsers.has(roomId)) roomUsers.set(roomId, new Set());
+      roomUsers.get(roomId)!.add(userName);
 
-      const messagePayload = {
-        id: data.id || crypto.randomUUID(),
-        senderName: data.senderName || "Unknown",
-        text: messageText,
-        createdAt: data.createdAt || new Date().toISOString(),
-      };
+      // Notify everyone in the room
+      io.to(roomId).emit("userList", Array.from(roomUsers.get(roomId)!));
+      io.to(roomId).emit("userJoined", userName);
 
-      io.to(data.roomId).emit("newMessage", messagePayload);
-    });
+      // --- Handle message events ---
+      socket.on("sendMessage", (msg) => {
+        io.to(roomId).emit("receiveMessage", msg);
+      });
 
-    socket.on("sendProof", (data) => {
-      console.log(`📎 Proof from ${socket.id} to room ${data.roomId}:`, data);
+      socket.on("sendProof", (proofMsg) => {
+        io.to(roomId).emit("receiveProof", proofMsg);
+      });
 
-      const proofPayload = {
-        id: data.id || crypto.randomUUID(),
-        senderName: data.senderName || "Unknown",
-        proofUrl: data.fileUrl,
-        createdAt: data.createdAt || new Date().toISOString(),
-      };
+      // --- Leaving or disconnecting ---
+      socket.on("disconnect", () => {
+        console.log(`❌ ${userName} left ${roomId}`);
+        roomUsers.get(roomId)?.delete(userName);
 
-      io.to(data.roomId).emit("newProof", proofPayload);
-    });
-
-    socket.on("disconnect", () => {
-      console.log("❌ Socket disconnected:", socket.id);
+        io.to(roomId).emit("userList", Array.from(roomUsers.get(roomId) || []));
+        io.to(roomId).emit("userLeft", userName);
+      });
     });
   });
-};
+}
